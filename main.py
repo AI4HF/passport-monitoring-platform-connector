@@ -12,15 +12,14 @@ class MonitoringPlatformConnector:
     Monitoring Connector that fetches data from AI4HF Passport Server and sent them into the monitoring platform.
     """
 
-    def __init__(self, passport_server_url: str, study_id: str, username: str, password: str, logstash_url: str,
+    def __init__(self, passport_server_url: str, study_id: str, connector_secret: str, logstash_url: str,
                  timestamp_file: str):
         """
         Initialize the API client with authentication and study details.
         """
         self.passport_server_url = passport_server_url
         self.study_id = study_id
-        self.username = username
-        self.password = password
+        self.connector_secret = connector_secret
         self.logstash_url = logstash_url
         self.timestamp_file = timestamp_file
         self.token = self._authenticate()
@@ -29,14 +28,9 @@ class MonitoringPlatformConnector:
         """
         Authenticate with login endpoint and retrieve an access token.
         """
-        auth_url = f"{self.passport_server_url}/user/login"
+        auth_url = f"{self.passport_server_url}/user/connector/login"
 
-        data = {
-            "username": self.username,
-            "password": self.password
-        }
-
-        response = requests.post(auth_url, json=data)
+        response = requests.post(auth_url, data=self.connector_secret)
         response.raise_for_status()
         return response.json().get("access_token")
 
@@ -276,16 +270,14 @@ if __name__ == "__main__":
     print("passport-monitoring-platform-connector has been started.")
     passport_server_url = os.getenv("PASSPORT_SERVER_URL", "http://localhost:80/ai4hf/passport/api")
     study_id = os.getenv("STUDY_ID", "initial_study")
-    username = os.getenv("USERNAME", "data_scientist")
-    password = os.getenv("PASSWORD", "data_scientist")
+    connector_secret = os.getenv("CONNECTOR_SECRET", "secret_here")
     logstash_url = os.getenv("LOGSTASH_URL", "http://localhost:5000")
     timestamp_file = os.getenv("TIMESTAMP_FILE", "/data/last_processed_timestamp.txt")
     try:
         connector = MonitoringPlatformConnector(
             passport_server_url=passport_server_url,
             study_id=study_id,
-            username=username,
-            password=password,
+            connector_secret=connector_secret,
             logstash_url=logstash_url,
             timestamp_file=timestamp_file
         )
