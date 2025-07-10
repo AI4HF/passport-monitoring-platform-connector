@@ -12,7 +12,7 @@ class MonitoringPlatformConnector:
     Monitoring Connector that fetches data from AI4HF Passport Server and sent them into the monitoring platform.
     """
 
-    def __init__(self, passport_server_url: str, study_id: str, connector_secret: str, logstash_url: str,
+    def __init__(self, passport_server_url: str, study_id: str, connector_secret: str, logstash_url: str, logstash_basic_auth: str,
                  timestamp_file: str):
         """
         Initialize the API client with authentication and study details.
@@ -21,6 +21,7 @@ class MonitoringPlatformConnector:
         self.study_id = study_id
         self.connector_secret = connector_secret
         self.logstash_url = logstash_url
+        self.logstash_basic_auth = logstash_basic_auth
         self.timestamp_file = timestamp_file
         self.token = self._authenticate()
 
@@ -173,7 +174,9 @@ class MonitoringPlatformConnector:
         """
 
         url = f"{self.logstash_url}"
-        headers = {"Content-Type": "application/json"}
+        headers = {"Content-Type": "application/json",
+                   "Authorization": f"Basic {self.logstash_basic_auth}"}
+        
         payload = {
             "event_type": monitoring_platform_evaluation_measure.event_type,
             "evaluation_measure_id": monitoring_platform_evaluation_measure.evaluation_measure_id,
@@ -272,6 +275,7 @@ if __name__ == "__main__":
     study_id = os.getenv("STUDY_ID", "initial_study")
     connector_secret = os.getenv("CONNECTOR_SECRET", "secret_here")
     logstash_url = os.getenv("LOGSTASH_URL", "http://localhost:5000")
+    logstash_basic_auth = os.getenv("LOGSTASH_BASIC_AUTH", "bG9nc3Rhc2hfaW50ZXJuYWw6MnNnUWRIMEtySGE1YzJsUzBMR2c=")
     timestamp_file = os.getenv("TIMESTAMP_FILE", "/data/last_processed_timestamp.txt")
     try:
         connector = MonitoringPlatformConnector(
@@ -279,6 +283,7 @@ if __name__ == "__main__":
             study_id=study_id,
             connector_secret=connector_secret,
             logstash_url=logstash_url,
+            logstash_basic_auth=logstash_basic_auth,
             timestamp_file=timestamp_file
         )
 
