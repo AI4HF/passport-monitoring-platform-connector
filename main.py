@@ -1,6 +1,6 @@
 from collections import defaultdict
 from dateutil.parser import isoparse
-import datetime
+from datetime import datetime
 from models import *
 import requests
 import os
@@ -185,7 +185,7 @@ class MonitoringPlatformConnector:
             "name": monitoring_platform_evaluation_measure.name,
             "value": monitoring_platform_evaluation_measure.value,
             "dataType": monitoring_platform_evaluation_measure.dataType,
-            "round_number": monitoring_platform_evaluation_measure.round_number,
+            "round": monitoring_platform_evaluation_measure.round_number,
             "timestamp": monitoring_platform_evaluation_measure.timestamp
         }
 
