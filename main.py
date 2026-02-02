@@ -1,5 +1,6 @@
 from collections import defaultdict
 from dateutil.parser import isoparse
+from dateutil.tz import UTC
 from datetime import datetime
 from models import *
 import requests
@@ -24,6 +25,18 @@ class MonitoringPlatformConnector:
         self.logstash_basic_auth = logstash_basic_auth
         self.timestamp_file = timestamp_file
         self.token = self._authenticate()
+
+    def parse_ts(self, ts_str: str) -> datetime:
+        """
+        Parse an ISO timestamp string into a timezone-aware UTC datetime.
+
+        - If ts_str has timezone info (e.g., 'Z', '+00:00', '+03:00'), preserve it and convert to UTC.
+        - If ts_str is naive (no timezone), assume UTC (project convention) and make it UTC-aware.
+        """
+        dt = isoparse(ts_str)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=UTC)
+        return dt.astimezone(UTC)
 
     def _authenticate(self) -> str:
         """
@@ -176,7 +189,7 @@ class MonitoringPlatformConnector:
         url = f"{self.logstash_url}"
         headers = {"Content-Type": "application/json",
                    "Authorization": f"Basic {self.logstash_basic_auth}"}
-        
+
         payload = {
             "event_type": monitoring_platform_evaluation_measure.event_type,
             "evaluation_measure_id": monitoring_platform_evaluation_measure.evaluation_measure_id,
@@ -205,11 +218,17 @@ class MonitoringPlatformConnector:
         # Fetch models and filter old models that already sent to the monitoring platform.
         model_list = self.fetch_models()
         last_ts = self.load_last_processed_timestamp()
-        new_models = [m for m in model_list if last_ts is None or isoparse(m.createdAt) > last_ts]
+
+        new_models = [
+            m for m in model_list
+            if last_ts is None or self.parse_ts(m.createdAt) > last_ts
+        ]
+
         # Fetch experiments and create a name map for (experiment_id,researchQuestion).
         experiment_list = self.fetch_experiments()
         experiment_name_map = {e.experimentId: e.researchQuestion for e in experiment_list}
         print("Transforming the fetched data...", flush=True)
+
         # Group models by experiment ID.
         models_by_experiment = defaultdict(list)
         for model in new_models:
@@ -217,7 +236,7 @@ class MonitoringPlatformConnector:
 
         for experiment_id, models in models_by_experiment.items():
             # Sort models by creation time.
-            sorted_models = sorted(models, key=lambda m: isoparse(m.createdAt))
+            sorted_models = sorted(models, key=lambda m: self.parse_ts(m.createdAt))
 
             # Starting from the oldest model, give round_number for each model.
             for round_number, model in enumerate(sorted_models, start=1):
@@ -242,10 +261,11 @@ class MonitoringPlatformConnector:
                     self.sent_monitoring_platform_evaluation_measure(monitoring_platform_evaluation_measure)
 
         # Write last timestamp value of the models that sent to the monitoring platform.
-        sorted_models = sorted(new_models, key=lambda m: isoparse(m.createdAt))
+        sorted_models = sorted(new_models, key=lambda m: self.parse_ts(m.createdAt))
         if sorted_models:
-            latest_ts = isoparse(sorted_models[-1].createdAt)
+            latest_ts = self.parse_ts(sorted_models[-1].createdAt)  # FIX
             self.save_last_processed_timestamp(latest_ts)
+
         print("Data is sent to the monitoring platform!", flush=True)
 
     def load_last_processed_timestamp(self):
@@ -255,15 +275,28 @@ class MonitoringPlatformConnector:
         try:
             with open(self.timestamp_file, "r") as f:
                 content = f.read().strip()
-                return isoparse(content) if content else None
+                if not content:
+                    return None
+
+                dt = isoparse(content)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=UTC)
+                dt = dt.astimezone(UTC)
+                return dt
         except Exception as e:
             print(f"[WARN] Failed to read timestamp file: {e}")
             return None
 
     def save_last_processed_timestamp(self, ts: datetime):
         try:
+            # Always write UTC-aware timestamp (FIX)
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=UTC)
+            ts = ts.astimezone(UTC)
+
             with open(self.timestamp_file, "w") as f:
                 f.write(ts.isoformat())
+
             print(f"[INFO] Updated last processed timestamp: {ts.isoformat()}")
         except Exception as e:
             print(f"[ERROR] Failed to write timestamp file: {e}")
