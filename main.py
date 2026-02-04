@@ -10,11 +10,11 @@ import traceback
 
 class MonitoringPlatformConnector:
     """
-    Monitoring Connector that fetches data from AI4HF Passport Server and sent them into the monitoring platform.
+    Monitoring Connector that fetches data from AI4HF Passport Server and sends them into the monitoring platform.
     """
 
-    def __init__(self, passport_server_url: str, study_id: str, connector_secret: str, logstash_url: str, logstash_basic_auth: str,
-                 timestamp_file: str):
+    def __init__(self, passport_server_url: str, study_id: str, connector_secret: str, logstash_url: str,
+                 logstash_basic_auth: str, timestamp_file: str):
         """
         Initialize the API client with authentication and study details.
         """
@@ -43,7 +43,6 @@ class MonitoringPlatformConnector:
         Authenticate with login endpoint and retrieve an access token.
         """
         auth_url = f"{self.passport_server_url}/user/connector/login"
-
         response = requests.post(auth_url, data=self.connector_secret)
         response.raise_for_status()
         return response.json().get("access_token")
@@ -54,16 +53,14 @@ class MonitoringPlatformConnector:
 
         :return response: List of Experiments from the AI4HF Passport Server.
         """
-
         url = f"{self.passport_server_url}/experiment?studyId={self.study_id}"
         headers = {"Authorization": f"Bearer {self.token}", "Content-Type": "application/json"}
         payload = {}
 
         response = requests.get(url, json=payload, headers=headers)
 
-        # If token is expired, retry
+        # If token is expired, refresh and retry the request.
         response = self._refreshTokenAndRetry(response, headers, payload, url)
-
         response.raise_for_status()
 
         response_array = response.json()
@@ -82,19 +79,16 @@ class MonitoringPlatformConnector:
         Fetch evaluation measures from the AI4HF Passport Server.
 
         :param model_id: The related ID of the model for which the evaluation measures should be fetched.
-
         :return response: List of EvaluationMeasures from the AI4HF Passport Server.
         """
-
         url = f"{self.passport_server_url}/evaluation-measure?studyId={self.study_id}&modelId={model_id}"
         headers = {"Authorization": f"Bearer {self.token}", "Content-Type": "application/json"}
         payload = {}
 
         response = requests.get(url, json=payload, headers=headers)
 
-        # If token is expired, retry
+        # If token is expired, refresh and retry the request.
         response = self._refreshTokenAndRetry(response, headers, payload, url)
-
         response.raise_for_status()
 
         response_array = response.json()
@@ -112,22 +106,19 @@ class MonitoringPlatformConnector:
 
     def _refreshTokenAndRetry(self, response, headers, payload, url):
         """
-        If token is expired, refresh token and retry
+        Refresh the token and retry the request if the previous response indicates the token is expired.
 
-        :param response: Response object from previous request.
-        :param headers: Headers object from previous request.
-        :param payload: Payload object from previous request.
-        :param url: The url to sent.
-
-        :return response: Response algorithm object from the server.
+        :param response: Response object from the previous request.
+        :param headers: Headers object from the previous request.
+        :param payload: Payload object from the previous request.
+        :param url: The URL of the request.
+        :return response: The response from the server.
         """
-
         if response.status_code == 401:  # Token expired, refresh and retry
             self.token = self._authenticate()
             headers["Authorization"] = f"Bearer {self.token}"
             return requests.get(url, json=payload, headers=headers)
-        else:
-            return response
+        return response
 
     def fetch_models(self) -> list[Model]:
         """
@@ -135,16 +126,14 @@ class MonitoringPlatformConnector:
 
         :return response: List of Models from the AI4HF Passport Server.
         """
-
         url = f"{self.passport_server_url}/model?studyId={self.study_id}"
         headers = {"Authorization": f"Bearer {self.token}", "Content-Type": "application/json"}
         payload = {}
 
         response = requests.get(url, json=payload, headers=headers)
 
-        # If token is expired, retry
+        # If token is expired, refresh and retry the request.
         response = self._refreshTokenAndRetry(response, headers, payload, url)
-
         response.raise_for_status()
 
         response_array = response.json()
@@ -179,16 +168,15 @@ class MonitoringPlatformConnector:
     def sent_monitoring_platform_evaluation_measure(self,
                                                     monitoring_platform_evaluation_measure: MonitoringPlatformEvaluationMeasure):
         """
-        Submit evaluation measure to the monitoring platform.
+        Submit an evaluation measure to the monitoring platform.
 
         :param monitoring_platform_evaluation_measure: The evaluation measure object to be sent.
-
-        :return
         """
-
         url = f"{self.logstash_url}"
-        headers = {"Content-Type": "application/json",
-                   "Authorization": f"Basic {self.logstash_basic_auth}"}
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Basic {self.logstash_basic_auth}"
+        }
 
         payload = {
             "event_type": monitoring_platform_evaluation_measure.event_type,
@@ -203,50 +191,91 @@ class MonitoringPlatformConnector:
         }
 
         response = requests.post(url, json=payload, headers=headers)
-
         response.raise_for_status()
         return
 
+    def _compute_round_map(self, model_list: list[Model]) -> dict[str, int]:
+        """
+        Compute round numbers using ALL models (not only new ones).
+        Round number is the 1..N position of a model within its experiment, ordered by createdAt ascending.
+
+        Notes:
+        - If createdAt ties occur, we add a deterministic tie-breaker (modelId).
+        - Models missing required fields are skipped to avoid crashes.
+        """
+        models_by_experiment = defaultdict(list)
+
+        for m in model_list:
+            if not getattr(m, "createdAt", None) or not getattr(m, "experimentId", None) or not getattr(m, "modelId", None):
+                continue
+            models_by_experiment[m.experimentId].append(m)
+
+        round_map: dict[str, int] = {}
+
+        for experiment_id, models in models_by_experiment.items():
+            sorted_all = sorted(
+                models,
+                key=lambda m: (self.parse_ts(m.createdAt), m.modelId)
+            )
+            for round_number, model in enumerate(sorted_all, start=1):
+                round_map[model.modelId] = round_number
+
+        return round_map
+
     def fetch_and_send_evaluation_measures(self):
         """
-        Fetch needed information from AI4HF Passport Server, transform data according to the monitoring platform,
-        and sent it into the monitoring platform.
+        Fetch data from AI4HF Passport Server, transform it, and send it to the monitoring platform.
 
-        :return
+        Important behavior:
+        - Round numbers are computed from ALL historical models first.
+        - Only after that, we filter by last_ts to decide what to send.
         """
         print("Fetching the data from AI4HF Passport Server...", flush=True)
-        # Fetch models and filter old models that already sent to the monitoring platform.
+
+        # 1) Fetch ALL models first (no filtering yet).
         model_list = self.fetch_models()
         last_ts = self.load_last_processed_timestamp()
 
-        new_models = [
+        # 2) Compute round numbers from ALL models.
+        round_map = self._compute_round_map(model_list)
+
+        # 3) Now filter models that are newer than the last processed timestamp.
+        models_to_send = [
             m for m in model_list
-            if last_ts is None or self.parse_ts(m.createdAt) > last_ts
+            if getattr(m, "createdAt", None)
+               and (last_ts is None or self.parse_ts(m.createdAt) > last_ts)
         ]
 
-        # Fetch experiments and create a name map for (experiment_id,researchQuestion).
+        if not models_to_send:
+            print("No new models to send.", flush=True)
+            return
+
+        # Fetch experiments and build a map (experimentId -> researchQuestion).
         experiment_list = self.fetch_experiments()
         experiment_name_map = {e.experimentId: e.researchQuestion for e in experiment_list}
+
         print("Transforming the fetched data...", flush=True)
 
-        # Group models by experiment ID.
+        # Group the filtered models by experiment for stable processing order.
         models_by_experiment = defaultdict(list)
-        for model in new_models:
+        for model in models_to_send:
             models_by_experiment[model.experimentId].append(model)
 
         for experiment_id, models in models_by_experiment.items():
-            # Sort models by creation time.
-            sorted_models = sorted(models, key=lambda m: self.parse_ts(m.createdAt))
+            # Sort the NEW models, but round numbers come from the precomputed round_map.
+            sorted_models = sorted(models, key=lambda m: (self.parse_ts(m.createdAt), m.modelId))
 
-            # Starting from the oldest model, give round_number for each model.
-            for round_number, model in enumerate(sorted_models, start=1):
-                # Fetch evaluation measures from AI4HF Passport Server that related to the model.
+            for model in sorted_models:
+                # Lookup the stable round number computed from ALL historical models.
+                round_number = round_map.get(model.modelId, 1)
+
+                # Fetch evaluation measures related to the model.
                 evaluation_measures = self.fetch_evaluation_measures(model.modelId)
 
-                # Get experiment name from the name map using experiment ID.
+                # Get experiment name from the map.
                 experiment_name = experiment_name_map.get(model.experimentId)
 
-                # Create Experiment object and sent them to the monitoring platform one by one.
+                # Send measures one by one.
                 for measure in evaluation_measures:
                     monitoring_platform_evaluation_measure = MonitoringPlatformEvaluationMeasure(
                         evaluation_measure_id=measure.measureId,
@@ -260,15 +289,17 @@ class MonitoringPlatformConnector:
                     )
                     self.sent_monitoring_platform_evaluation_measure(monitoring_platform_evaluation_measure)
 
-        # Write last timestamp value of the models that sent to the monitoring platform.
-        sorted_models = sorted(new_models, key=lambda m: self.parse_ts(m.createdAt))
-        if sorted_models:
-            latest_ts = self.parse_ts(sorted_models[-1].createdAt)  # FIX
-            self.save_last_processed_timestamp(latest_ts)
+        # 4) Update the timestamp to the newest model that was actually sent.
+        sent_sorted = sorted(models_to_send, key=lambda m: (self.parse_ts(m.createdAt), m.modelId))
+        latest_ts = self.parse_ts(sent_sorted[-1].createdAt)
+        self.save_last_processed_timestamp(latest_ts)
 
         print("Data is sent to the monitoring platform!", flush=True)
 
     def load_last_processed_timestamp(self):
+        """
+        Load the last processed timestamp from a file as a UTC-aware datetime.
+        """
         if not os.path.exists(self.timestamp_file):
             print(f"[INFO] Timestamp file not found, assuming first run.")
             return None
@@ -288,8 +319,11 @@ class MonitoringPlatformConnector:
             return None
 
     def save_last_processed_timestamp(self, ts: datetime):
+        """
+        Persist the last processed timestamp to a file in UTC ISO format.
+        """
         try:
-            # Always write UTC-aware timestamp (FIX)
+            # Always write a UTC-aware timestamp.
             if ts.tzinfo is None:
                 ts = ts.replace(tzinfo=UTC)
             ts = ts.astimezone(UTC)
@@ -308,8 +342,12 @@ if __name__ == "__main__":
     study_id = os.getenv("STUDY_ID", "initial_study")
     connector_secret = os.getenv("CONNECTOR_SECRET", "secret_here")
     logstash_url = os.getenv("LOGSTASH_URL", "http://localhost:5000")
-    logstash_basic_auth = os.getenv("LOGSTASH_BASIC_AUTH", "bG9nc3Rhc2hfaW50ZXJuYWw6MnNnUWRIMEtySGE1YzJsUzBMR2c=")
+    logstash_basic_auth = os.getenv(
+        "LOGSTASH_BASIC_AUTH",
+        "bG9nc3Rhc2hfaW50ZXJuYWw6MnNnUWRIMEtySGE1YzJsUzBMR2c="
+    )
     timestamp_file = os.getenv("TIMESTAMP_FILE", "/data/last_processed_timestamp.txt")
+
     try:
         connector = MonitoringPlatformConnector(
             passport_server_url=passport_server_url,
