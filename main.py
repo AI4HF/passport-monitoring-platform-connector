@@ -74,14 +74,46 @@ class MonitoringPlatformConnector:
 
         return response_experiments
 
-    def fetch_evaluation_measures(self, model_id: str) -> list[EvaluationMeasure]:
+    def fetch_model_evaluations(self, model_id: str) -> list[ModelEvaluation]:
         """
-        Fetch evaluation measures from the AI4HF Passport Server.
+        Fetch the evaluation runs of a model from the AI4HF Passport Server.
 
-        :param model_id: The related ID of the model for which the evaluation measures should be fetched.
+        :param model_id: The related ID of the model for which the evaluation runs should be fetched.
+        :return response: List of ModelEvaluations from the AI4HF Passport Server.
+        """
+        url = f"{self.passport_server_url}/model-evaluation?studyId={self.study_id}&modelId={model_id}"
+        headers = {"Authorization": f"Bearer {self.token}", "Content-Type": "application/json"}
+        payload = {}
+
+        response = requests.get(url, json=payload, headers=headers)
+
+        # If token is expired, refresh and retry the request.
+        response = self._refreshTokenAndRetry(response, headers, payload, url)
+        response.raise_for_status()
+
+        response_array = response.json()
+        response_model_evaluations: list[ModelEvaluation] = []
+        for model_evaluation_json in response_array:
+            response_model_evaluations.append(ModelEvaluation(
+                modelEvaluationId=model_evaluation_json.get('modelEvaluationId'),
+                modelId=model_evaluation_json.get('modelId'),
+                organizationId=model_evaluation_json.get('organizationId'),
+                trigger=model_evaluation_json.get('trigger'),
+                aggregationMethod=model_evaluation_json.get('aggregationMethod'),
+                executedAt=model_evaluation_json.get('executedAt'),
+                executedBy=model_evaluation_json.get('executedBy'),
+                description=model_evaluation_json.get('description')
+            ))
+        return response_model_evaluations
+
+    def fetch_evaluation_measures(self, model_evaluation_id: str) -> list[EvaluationMeasure]:
+        """
+        Fetch the evaluation measures produced by an evaluation run.
+
+        :param model_evaluation_id: The ID of the evaluation run whose measures should be fetched.
         :return response: List of EvaluationMeasures from the AI4HF Passport Server.
         """
-        url = f"{self.passport_server_url}/evaluation-measure?studyId={self.study_id}&modelId={model_id}"
+        url = f"{self.passport_server_url}/evaluation-measure?studyId={self.study_id}&modelEvaluationId={model_evaluation_id}"
         headers = {"Authorization": f"Bearer {self.token}", "Content-Type": "application/json"}
         payload = {}
 
@@ -100,7 +132,7 @@ class MonitoringPlatformConnector:
                 dataType=evaluation_measure_json.get('dataType'),
                 description=evaluation_measure_json.get('description'),
                 measureId=evaluation_measure_json.get('measureId'),
-                modelId=evaluation_measure_json.get('modelId')
+                modelEvaluationId=evaluation_measure_json.get('modelEvaluationId')
             ))
         return response_evaluation_measures
 
@@ -161,7 +193,7 @@ class MonitoringPlatformConnector:
                 studyId=model_json.get('studyId'),
                 experimentId=model_json.get('experimentId'),
                 name=model_json.get('name'),
-                owner=model_json.get('owner')
+                ownerOrganizationId=model_json.get('ownerOrganizationId')
             ))
         return response_models
 
@@ -269,25 +301,26 @@ class MonitoringPlatformConnector:
                 # Lookup the stable round number computed from ALL historical models.
                 round_number = round_map.get(model.modelId, 1)
 
-                # Fetch evaluation measures related to the model.
-                evaluation_measures = self.fetch_evaluation_measures(model.modelId)
-
                 # Get experiment name from the map.
                 experiment_name = experiment_name_map.get(model.experimentId)
 
-                # Send measures one by one.
-                for measure in evaluation_measures:
-                    monitoring_platform_evaluation_measure = MonitoringPlatformEvaluationMeasure(
-                        evaluation_measure_id=measure.measureId,
-                        experiment_id=model.experimentId,
-                        experiment_name=experiment_name,
-                        name=measure.name,
-                        value=float(measure.value),
-                        dataType=measure.dataType,
-                        round_number=round_number,
-                        timestamp=model.createdAt
-                    )
-                    self.sent_monitoring_platform_evaluation_measure(monitoring_platform_evaluation_measure)
+                # Measures hang off evaluation runs, so walk the runs of the model first.
+                for model_evaluation in self.fetch_model_evaluations(model.modelId):
+                    evaluation_measures = self.fetch_evaluation_measures(model_evaluation.modelEvaluationId)
+
+                    # Send measures one by one.
+                    for measure in evaluation_measures:
+                        monitoring_platform_evaluation_measure = MonitoringPlatformEvaluationMeasure(
+                            evaluation_measure_id=measure.measureId,
+                            experiment_id=model.experimentId,
+                            experiment_name=experiment_name,
+                            name=measure.name,
+                            value=float(measure.value),
+                            dataType=measure.dataType,
+                            round_number=round_number,
+                            timestamp=model_evaluation.executedAt or model.createdAt
+                        )
+                        self.sent_monitoring_platform_evaluation_measure(monitoring_platform_evaluation_measure)
 
         # 4) Update the timestamp to the newest model that was actually sent.
         sent_sorted = sorted(models_to_send, key=lambda m: (self.parse_ts(m.createdAt), m.modelId))
