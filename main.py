@@ -13,14 +13,23 @@ class MonitoringPlatformConnector:
     Monitoring Connector that fetches data from AI4HF Passport Server and sends them into the monitoring platform.
     """
 
-    def __init__(self, passport_server_url: str, study_id: str, connector_secret: str, logstash_url: str,
-                 logstash_basic_auth: str, timestamp_file: str):
+    def __init__(self, passport_server_url: str, study_id: str, keycloak_server_url: str,
+                 client_id: str, client_secret: str, logstash_url: str,
+                 logstash_basic_auth: str, timestamp_file: str,
+                 keycloak_realm: str = "AI4HF-Authorization"):
         """
         Initialize the API client with authentication and study details.
+
+        The connector authenticates as a Keycloak service account using the client_credentials grant.
+        The service account must be a member of the study group with the DATA_SCIENTIST role, since
+        that is what reading models and their evaluation measures requires.
         """
         self.passport_server_url = passport_server_url
         self.study_id = study_id
-        self.connector_secret = connector_secret
+        self.keycloak_server_url = keycloak_server_url.rstrip("/")
+        self.keycloak_realm = keycloak_realm
+        self.client_id = client_id
+        self.client_secret = client_secret
         self.logstash_url = logstash_url
         self.logstash_basic_auth = logstash_basic_auth
         self.timestamp_file = timestamp_file
@@ -40,10 +49,16 @@ class MonitoringPlatformConnector:
 
     def _authenticate(self) -> str:
         """
-        Authenticate with login endpoint and retrieve an access token.
+        Obtain an access token for this connector's Keycloak service account.
+
+        :return token: The access token used as a bearer token for every Passport call.
         """
-        auth_url = f"{self.passport_server_url}/user/connector/login"
-        response = requests.post(auth_url, data=self.connector_secret)
+        token_url = f"{self.keycloak_server_url}/realms/{self.keycloak_realm}/protocol/openid-connect/token"
+        response = requests.post(token_url, data={
+            "grant_type": "client_credentials",
+            "client_id": self.client_id,
+            "client_secret": self.client_secret,
+        })
         response.raise_for_status()
         return response.json().get("access_token")
 
@@ -373,7 +388,10 @@ if __name__ == "__main__":
     print("passport-monitoring-platform-connector has been started.")
     passport_server_url = os.getenv("PASSPORT_SERVER_URL", "http://localhost:80/ai4hf/passport/api")
     study_id = os.getenv("STUDY_ID", "initial_study")
-    connector_secret = os.getenv("CONNECTOR_SECRET", "secret_here")
+    keycloak_server_url = os.getenv("KEYCLOAK_SERVER_URL", "http://localhost:8081")
+    keycloak_realm = os.getenv("KEYCLOAK_REALM", "AI4HF-Authorization")
+    client_id = os.getenv("CLIENT_ID", "ai4hf-monitoring-connector")
+    client_secret = os.getenv("CLIENT_SECRET", "")
     logstash_url = os.getenv("LOGSTASH_URL", "http://localhost:5000")
     logstash_basic_auth = os.getenv(
         "LOGSTASH_BASIC_AUTH",
@@ -385,7 +403,10 @@ if __name__ == "__main__":
         connector = MonitoringPlatformConnector(
             passport_server_url=passport_server_url,
             study_id=study_id,
-            connector_secret=connector_secret,
+            keycloak_server_url=keycloak_server_url,
+            keycloak_realm=keycloak_realm,
+            client_id=client_id,
+            client_secret=client_secret,
             logstash_url=logstash_url,
             logstash_basic_auth=logstash_basic_auth,
             timestamp_file=timestamp_file
