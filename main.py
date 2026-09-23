@@ -13,14 +13,23 @@ class MonitoringPlatformConnector:
     Monitoring Connector that fetches data from AI4HF Passport Server and sends them into the monitoring platform.
     """
 
-    def __init__(self, passport_server_url: str, study_id: str, connector_secret: str, logstash_url: str,
-                 logstash_basic_auth: str, timestamp_file: str):
+    def __init__(self, passport_server_url: str, study_id: str, keycloak_server_url: str,
+                 client_id: str, client_secret: str, logstash_url: str,
+                 logstash_basic_auth: str, timestamp_file: str,
+                 keycloak_realm: str = "AI4HF-Authorization"):
         """
         Initialize the API client with authentication and study details.
+
+        The connector authenticates as a Keycloak service account using the client_credentials grant.
+        The service account must be a member of the study group with the DATA_SCIENTIST role, since
+        that is what reading models and their evaluation measures requires.
         """
         self.passport_server_url = passport_server_url
         self.study_id = study_id
-        self.connector_secret = connector_secret
+        self.keycloak_server_url = keycloak_server_url.rstrip("/")
+        self.keycloak_realm = keycloak_realm
+        self.client_id = client_id
+        self.client_secret = client_secret
         self.logstash_url = logstash_url
         self.logstash_basic_auth = logstash_basic_auth
         self.timestamp_file = timestamp_file
@@ -40,10 +49,16 @@ class MonitoringPlatformConnector:
 
     def _authenticate(self) -> str:
         """
-        Authenticate with login endpoint and retrieve an access token.
+        Obtain an access token for this connector's Keycloak service account.
+
+        :return token: The access token used as a bearer token for every Passport call.
         """
-        auth_url = f"{self.passport_server_url}/user/connector/login"
-        response = requests.post(auth_url, data=self.connector_secret)
+        token_url = f"{self.keycloak_server_url}/realms/{self.keycloak_realm}/protocol/openid-connect/token"
+        response = requests.post(token_url, data={
+            "grant_type": "client_credentials",
+            "client_id": self.client_id,
+            "client_secret": self.client_secret,
+        })
         response.raise_for_status()
         return response.json().get("access_token")
 
@@ -74,14 +89,46 @@ class MonitoringPlatformConnector:
 
         return response_experiments
 
-    def fetch_evaluation_measures(self, model_id: str) -> list[EvaluationMeasure]:
+    def fetch_model_evaluations(self, model_id: str) -> list[ModelEvaluation]:
         """
-        Fetch evaluation measures from the AI4HF Passport Server.
+        Fetch the evaluation runs of a model from the AI4HF Passport Server.
 
-        :param model_id: The related ID of the model for which the evaluation measures should be fetched.
+        :param model_id: The related ID of the model for which the evaluation runs should be fetched.
+        :return response: List of ModelEvaluations from the AI4HF Passport Server.
+        """
+        url = f"{self.passport_server_url}/model-evaluation?studyId={self.study_id}&modelId={model_id}"
+        headers = {"Authorization": f"Bearer {self.token}", "Content-Type": "application/json"}
+        payload = {}
+
+        response = requests.get(url, json=payload, headers=headers)
+
+        # If token is expired, refresh and retry the request.
+        response = self._refreshTokenAndRetry(response, headers, payload, url)
+        response.raise_for_status()
+
+        response_array = response.json()
+        response_model_evaluations: list[ModelEvaluation] = []
+        for model_evaluation_json in response_array:
+            response_model_evaluations.append(ModelEvaluation(
+                modelEvaluationId=model_evaluation_json.get('modelEvaluationId'),
+                modelId=model_evaluation_json.get('modelId'),
+                organizationId=model_evaluation_json.get('organizationId'),
+                trigger=model_evaluation_json.get('trigger'),
+                aggregationMethod=model_evaluation_json.get('aggregationMethod'),
+                executedAt=model_evaluation_json.get('executedAt'),
+                executedBy=model_evaluation_json.get('executedBy'),
+                description=model_evaluation_json.get('description')
+            ))
+        return response_model_evaluations
+
+    def fetch_evaluation_measures(self, model_evaluation_id: str) -> list[EvaluationMeasure]:
+        """
+        Fetch the evaluation measures produced by an evaluation run.
+
+        :param model_evaluation_id: The ID of the evaluation run whose measures should be fetched.
         :return response: List of EvaluationMeasures from the AI4HF Passport Server.
         """
-        url = f"{self.passport_server_url}/evaluation-measure?studyId={self.study_id}&modelId={model_id}"
+        url = f"{self.passport_server_url}/evaluation-measure?studyId={self.study_id}&modelEvaluationId={model_evaluation_id}"
         headers = {"Authorization": f"Bearer {self.token}", "Content-Type": "application/json"}
         payload = {}
 
@@ -100,7 +147,7 @@ class MonitoringPlatformConnector:
                 dataType=evaluation_measure_json.get('dataType'),
                 description=evaluation_measure_json.get('description'),
                 measureId=evaluation_measure_json.get('measureId'),
-                modelId=evaluation_measure_json.get('modelId')
+                modelEvaluationId=evaluation_measure_json.get('modelEvaluationId')
             ))
         return response_evaluation_measures
 
@@ -161,7 +208,7 @@ class MonitoringPlatformConnector:
                 studyId=model_json.get('studyId'),
                 experimentId=model_json.get('experimentId'),
                 name=model_json.get('name'),
-                owner=model_json.get('owner')
+                ownerOrganizationId=model_json.get('ownerOrganizationId')
             ))
         return response_models
 
@@ -269,25 +316,26 @@ class MonitoringPlatformConnector:
                 # Lookup the stable round number computed from ALL historical models.
                 round_number = round_map.get(model.modelId, 1)
 
-                # Fetch evaluation measures related to the model.
-                evaluation_measures = self.fetch_evaluation_measures(model.modelId)
-
                 # Get experiment name from the map.
                 experiment_name = experiment_name_map.get(model.experimentId)
 
-                # Send measures one by one.
-                for measure in evaluation_measures:
-                    monitoring_platform_evaluation_measure = MonitoringPlatformEvaluationMeasure(
-                        evaluation_measure_id=measure.measureId,
-                        experiment_id=model.experimentId,
-                        experiment_name=experiment_name,
-                        name=measure.name,
-                        value=float(measure.value),
-                        dataType=measure.dataType,
-                        round_number=round_number,
-                        timestamp=model.createdAt
-                    )
-                    self.sent_monitoring_platform_evaluation_measure(monitoring_platform_evaluation_measure)
+                # Measures hang off evaluation runs, so walk the runs of the model first.
+                for model_evaluation in self.fetch_model_evaluations(model.modelId):
+                    evaluation_measures = self.fetch_evaluation_measures(model_evaluation.modelEvaluationId)
+
+                    # Send measures one by one.
+                    for measure in evaluation_measures:
+                        monitoring_platform_evaluation_measure = MonitoringPlatformEvaluationMeasure(
+                            evaluation_measure_id=measure.measureId,
+                            experiment_id=model.experimentId,
+                            experiment_name=experiment_name,
+                            name=measure.name,
+                            value=float(measure.value),
+                            dataType=measure.dataType,
+                            round_number=round_number,
+                            timestamp=model_evaluation.executedAt or model.createdAt
+                        )
+                        self.sent_monitoring_platform_evaluation_measure(monitoring_platform_evaluation_measure)
 
         # 4) Update the timestamp to the newest model that was actually sent.
         sent_sorted = sorted(models_to_send, key=lambda m: (self.parse_ts(m.createdAt), m.modelId))
@@ -340,7 +388,10 @@ if __name__ == "__main__":
     print("passport-monitoring-platform-connector has been started.")
     passport_server_url = os.getenv("PASSPORT_SERVER_URL", "http://localhost:80/ai4hf/passport/api")
     study_id = os.getenv("STUDY_ID", "initial_study")
-    connector_secret = os.getenv("CONNECTOR_SECRET", "secret_here")
+    keycloak_server_url = os.getenv("KEYCLOAK_SERVER_URL", "http://localhost:8081")
+    keycloak_realm = os.getenv("KEYCLOAK_REALM", "AI4HF-Authorization")
+    client_id = os.getenv("CLIENT_ID", "ai4hf-monitoring-connector")
+    client_secret = os.getenv("CLIENT_SECRET", "")
     logstash_url = os.getenv("LOGSTASH_URL", "http://localhost:5000")
     logstash_basic_auth = os.getenv(
         "LOGSTASH_BASIC_AUTH",
@@ -352,7 +403,10 @@ if __name__ == "__main__":
         connector = MonitoringPlatformConnector(
             passport_server_url=passport_server_url,
             study_id=study_id,
-            connector_secret=connector_secret,
+            keycloak_server_url=keycloak_server_url,
+            keycloak_realm=keycloak_realm,
+            client_id=client_id,
+            client_secret=client_secret,
             logstash_url=logstash_url,
             logstash_basic_auth=logstash_basic_auth,
             timestamp_file=timestamp_file

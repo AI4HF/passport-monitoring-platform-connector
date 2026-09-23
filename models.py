@@ -2,7 +2,7 @@ import json
 
 
 class EvaluationMeasure:
-    def __init__(self, name:str, value: str, dataType: str, description: str, measureId: str, modelId: str):
+    def __init__(self, name:str, value: str, dataType: str, description: str, measureId: str, modelEvaluationId: str):
         """
         Initialize the EvaluationMeasure object from arguments.
         """
@@ -11,11 +11,35 @@ class EvaluationMeasure:
         self.dataType = dataType
         self.description = description
         self.measureId = measureId
-        self.modelId = modelId
+        self.modelEvaluationId = modelEvaluationId
 
     def __str__(self):
-        return json.dumps({"measureId": self.measureId, "modelId": self.modelId, "name": self.name, "value": self.value,
+        return json.dumps({"measureId": self.measureId, "modelEvaluationId": self.modelEvaluationId,
+                           "name": self.name, "value": self.value,
                            "dataType": self.dataType, "description": self.description})
+
+
+class ModelEvaluation:
+    def __init__(self, modelEvaluationId: str, modelId: str, trigger: str = None, aggregationMethod: str = None,
+                 executedAt: str = None, executedBy: str = None, organizationId: str = None, description: str = None):
+        """
+        Initialize the ModelEvaluation object from arguments. Measures belong to a run rather than
+        directly to the model, so the connector reads the runs of a model and then their measures.
+        """
+        self.modelEvaluationId = modelEvaluationId
+        self.modelId = modelId
+        self.organizationId = organizationId
+        self.trigger = trigger
+        self.aggregationMethod = aggregationMethod
+        self.executedAt = executedAt
+        self.executedBy = executedBy
+        self.description = description
+
+    def __str__(self):
+        return json.dumps({"modelEvaluationId": self.modelEvaluationId, "modelId": self.modelId,
+                           "organizationId": self.organizationId, "trigger": self.trigger,
+                           "aggregationMethod": self.aggregationMethod, "executedAt": self.executedAt,
+                           "executedBy": self.executedBy, "description": self.description})
 
 
 class Model:
@@ -40,7 +64,7 @@ class Model:
                  studyId: str = None,
                  experimentId: str = None,
                  name: str = None,
-                 owner: str = None,
+                 ownerOrganizationId: str = None,
                  modelType: str = None):
         """
         Initialize the Model object from arguments.
@@ -54,7 +78,7 @@ class Model:
         self.tag = tag
         self.modelType = modelType
         self.productIdentifier = productIdentifier
-        self.owner = owner
+        self.ownerOrganizationId = ownerOrganizationId
         self.trlLevel = trlLevel
         self.license = license
         self.primaryUse = primaryUse
@@ -78,7 +102,7 @@ class Model:
                            "tag": self.tag,
                            "modelType": self.modelType,
                            "productIdentifier": self.productIdentifier,
-                           "owner": self.owner,
+                           "ownerOrganizationId": self.ownerOrganizationId,
                            "trlLevel": self.trlLevel,
                            "license": self.license,
                            "primaryUse": self.primaryUse,
