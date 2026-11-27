@@ -133,9 +133,15 @@ class Experiment:
 
 class MonitoringPlatformEvaluationMeasure:
     def __init__(self, evaluation_measure_id: str, experiment_id: str, experiment_name: str, name: str,
-                 value: float, dataType: str, round_number: int, timestamp: str):
+                 value: float, dataType: str, round_number: int, timestamp: str,
+                 model_id: str = None, model_name: str = None, model_evaluation_id: str = None,
+                 organization_id: str = None):
         """
         Initialize the MonitoringPlatformEvaluationMeasure object from arguments.
+
+        model_id is the Passport's model id, so every measure on the dashboard traces back to the passport of
+        the model; organization_id is None for a federated aggregate and the site's id for a per-site run.
+        name is the metric name the dashboards use.
         """
         self.event_type = "evaluation_measure"
         self.evaluation_measure_id = evaluation_measure_id
@@ -146,9 +152,46 @@ class MonitoringPlatformEvaluationMeasure:
         self.dataType = dataType
         self.round_number = round_number
         self.timestamp = timestamp
+        self.model_id = model_id
+        self.model_name = model_name
+        self.model_evaluation_id = model_evaluation_id
+        self.organization_id = organization_id
+
+    def to_event(self) -> dict:
+        """The Logstash event."""
+        return {"event_type": self.event_type, "evaluation_measure_id": self.evaluation_measure_id,
+                "experiment_id": self.experiment_id, "experiment_name": self.experiment_name,
+                "name": self.name, "value": self.value,
+                "dataType": self.dataType, "round": self.round_number, "timestamp": self.timestamp,
+                "model_id": self.model_id, "model_name": self.model_name,
+                "model_evaluation_id": self.model_evaluation_id, "organization_id": self.organization_id}
 
     def __str__(self):
-        return json.dumps({"event_type": self.event_type, "evaluation_measure_id": self.evaluation_measure_id,
-                           "experiment_id": self.experiment_id, "experiment_name": self.experiment_name,
-                           "name": self.name, "value": self.value, "dataType": self.dataType,
-                           "round_number": self.round_number, "timestamp": self.timestamp})
+        return json.dumps(self.to_event())
+
+
+class MonitoringPlatformModel:
+    def __init__(self, model_id: str, model_name: str, version: str, experiment_id: str,
+                 owner_organization_id: str, created_at: str, evaluation_metrics: dict):
+        """
+        Initialize the MonitoringPlatformModel object from arguments: the "model" event that registers a
+        Passport model in the site's Monitoring Platform, with its aggregated training metrics.
+        """
+        self.event_type = "model"
+        self.model_id = model_id
+        self.model_name = model_name
+        self.version = version
+        self.experiment_id = experiment_id
+        self.owner_organization_id = owner_organization_id
+        self.created_at = created_at
+        self.evaluation_metrics = evaluation_metrics
+
+    def to_event(self) -> dict:
+        """The Logstash event."""
+        return {"event_type": self.event_type, "model_id": self.model_id, "model_name": self.model_name,
+                "version": self.version, "description": f"{self.model_name} {self.version}",
+                "experiment_id": self.experiment_id, "owner_organization_id": self.owner_organization_id,
+                "evaluation_metrics": self.evaluation_metrics, "@timestamp": self.created_at}
+
+    def __str__(self):
+        return json.dumps(self.to_event())
